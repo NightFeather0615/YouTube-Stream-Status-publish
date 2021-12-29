@@ -22,7 +22,21 @@ notify_channel_id = os.getenv("NOTIFY_CHANNEL_ID")
 notify_role_id = os.getenv("NOTIFY_ROLE_ID")
 refresh_index = 0
 
-def process_notify_message(notify_type, video_url, video_title, scheduled_start_time, actual_start_time, actual_end_time, elapsed_time):
+def process_notify_message(notify_type, video_id):
+  stream_data = requests.get(f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&part=snippet,liveStreamingDetails&key={google_api_key}")
+  stream_data = stream_data.json()
+  video_title = stream_data['items'][0]['snippet'].get('title')
+  video_url = f"https://www.youtube.com/watch?v={video_id}"
+  actual_start_time = stream_data['items'][0]['liveStreamingDetails'].get("actualStartTime")
+  actual_end_time = stream_data['items'][0]['liveStreamingDetails'].get("actualEndTime")
+  scheduled_start_time = datetime.datetime.strptime(stream_data['items'][0]['liveStreamingDetails'].get("scheduledStartTime"), "%Y-%m-%dT%H:%M:%SZ")
+  elapsed_time = None
+  if actual_start_time != None:
+    actual_start_time = datetime.datetime.strptime(actual_start_time, "%Y-%m-%dT%H:%M:%SZ")
+  if actual_end_time != None:
+    actual_end_time = datetime.datetime.strptime(actual_end_time, "%Y-%m-%dT%H:%M:%SZ")
+  if actual_start_time != None and actual_end_time != None:
+    elapsed_time = datetime.timedelta(seconds=round(actual_end_time.timestamp()) - round(actual_start_time.timestamp()))
   if notify_type == "upcoming":
     if not ("$[actual_start_timestamp]$" or "$[actual_end_timestamp]$" or "$[elapsed_time]$") in upcoming_notify_message:
       msg = upcoming_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
@@ -85,29 +99,18 @@ async def stream_status(video_url):
   global channel_title
   global refresh_index
   refresh_index += 1
-  video_id = video_url.split("/watch?v=")[1]
-  stream_data = requests.get(f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&part=snippet,liveStreamingDetails&key={google_api_key}")
-  stream_data = stream_data.json()
-  video_title = stream_data['items'][0]['snippet'].get('title')
   guild = await client.fetch_guild(guild_id)
   member = await guild.fetch_member(client.user.id)
   notify_channel = await client.fetch_channel(notify_channel_id)
-  actual_start_time = stream_data['items'][0]['liveStreamingDetails'].get("actualStartTime")
-  actual_end_time = stream_data['items'][0]['liveStreamingDetails'].get("actualEndTime")
-  scheduled_start_time = datetime.datetime.strptime(stream_data['items'][0]['liveStreamingDetails'].get("scheduledStartTime"), "%Y-%m-%dT%H:%M:%SZ")
-  elapsed_time = None
-  if actual_start_time != None:
-    actual_start_time = datetime.datetime.strptime(actual_start_time, "%Y-%m-%dT%H:%M:%SZ")
-  if actual_end_time != None:
-    actual_end_time = datetime.datetime.strptime(actual_end_time, "%Y-%m-%dT%H:%M:%SZ")
-  if actual_start_time != None and actual_end_time != None:
-    elapsed_time = datetime.timedelta(seconds=round(actual_end_time.timestamp()) - round(actual_start_time.timestamp()))
+  video_id = video_url.split("/watch?v=")[1]
+  stream_data = requests.get(f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&part=snippet,liveStreamingDetails&key={google_api_key}")
+  stream_data = stream_data.json()
   live_broadcast_content = stream_data['items'][0]['snippet'].get("liveBroadcastContent")
-  concurrent_viewers = stream_data['items'][0]['liveStreamingDetails'].get("concurrentViewers")
-  active_live_chat_id = stream_data['items'][0]['liveStreamingDetails'].get("activeLiveChatId")
+  video_title = stream_data['items'][0]['snippet'].get('title')
+  actual_end_time = stream_data['items'][0]['liveStreamingDetails'].get("actualEndTime")
   with open('catch.json', 'r', encoding='utf8') as f:
     catch_data = json.load(f)
-  if refresh_index >= 15:
+  if refresh_index >= 5:
     await client.change_presence(status=discord.Status.dnd)
     await member.edit(nick = f"🕒 同步資料中")
     refresh_index = 0
@@ -117,9 +120,16 @@ async def stream_status(video_url):
     if live_broadcast_content == "upcoming":
       await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
       await member.edit(nick = f"🟠 待機中")
+      if catch_data["end_catch"] != catch_data["live_catch"]:
+        msg = process_notify_message("end", catch_data["live_catch"])
+        if msg != None:
+          await notify_channel.send(content=msg)
+        catch_data["end_catch"] = catch_data["live_catch"]
+        with open('catch.json', 'w') as f:
+          json.dump(catch_data, f, indent=4)
       if catch_data["upcoming_catch"] != video_id:
         catch_data["upcoming_catch"] = video_id
-        msg = process_notify_message("upcoming", video_url, video_title, scheduled_start_time, actual_start_time, actual_end_time, elapsed_time)
+        msg = process_notify_message("upcoming", video_id)
         if msg != None:
           await notify_channel.send(content=msg)
         with open('catch.json', 'w') as f:
@@ -129,7 +139,7 @@ async def stream_status(video_url):
       await member.edit(nick = f"🔴 直播中")
       if catch_data["live_catch"] != video_id:
         catch_data["live_catch"] = video_id
-        msg = process_notify_message("live", video_url, video_title, scheduled_start_time, actual_start_time, actual_end_time, elapsed_time)
+        msg = process_notify_message("live", video_id)
         if msg != None:
           await notify_channel.send(content=msg)
         with open('catch.json', 'w') as f:
@@ -139,7 +149,7 @@ async def stream_status(video_url):
       await member.edit(nick = f"⚫ 無活動")
       if catch_data["end_catch"] != video_id:
         catch_data["end_catch"] = video_id
-        msg = process_notify_message("end", video_url, video_title, scheduled_start_time, actual_start_time, actual_end_time, elapsed_time)
+        msg = process_notify_message("end", video_id)
         if msg != None:
           await notify_channel.send(content=msg)
         with open('catch.json', 'w') as f:
