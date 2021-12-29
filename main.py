@@ -22,6 +22,48 @@ notify_channel_id = os.getenv("NOTIFY_CHANNEL_ID")
 notify_role_id = os.getenv("NOTIFY_ROLE_ID")
 refresh_index = 0
 
+def process_notify_message(notify_type, video_url, video_title, scheduled_start_time, actual_start_time, actual_end_time, elapsed_time):
+  if notify_type == "upcoming":
+    if not ("$[actual_start_timestamp]$" or "$[actual_end_timestamp]$" or "$[elapsed_time]$") in upcoming_notify_message:
+      msg = upcoming_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
+      msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
+      msg = msg.replace("$[role_id]$", notify_role_id)
+      msg = msg.replace("$[channel_title]$", channel_title)
+      msg = msg.replace("$[video_url]$", video_url)
+      msg = msg.replace("$[video_title]$", video_title)
+      return msg
+    else:
+      print('Error: 自訂通知包含無效參數，尚未開始的串流不包含所要求的參數')
+      return None
+  elif notify_type == "live":
+    if not ("$[actual_end_timestamp]$" or "$[elapsed_time]$") in live_notify_message:
+      msg = live_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
+      msg = msg.replace("$[actual_start_timestamp]$", str(round(actual_start_time.timestamp()) + (utc_timezone * 3600)))
+      msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
+      msg = msg.replace("$[role_id]$", notify_role_id)
+      msg = msg.replace("$[channel_title]$", channel_title)
+      msg = msg.replace("$[video_url]$", video_url)
+      msg = msg.replace("$[video_title]$", video_title)
+      return msg
+    else:
+      print('Error: 自訂通知包含無效參數，進行中的串流不包含所要求的參數')
+      return None
+  elif notify_type == "end":
+    msg = end_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
+    msg = msg.replace("$[actual_start_timestamp]$", str(round(actual_start_time.timestamp()) + (utc_timezone * 3600)))
+    msg = msg.replace("$[actual_end_timestamp]$", str(round(actual_end_time.timestamp()) + (utc_timezone * 3600)))
+    msg = msg.replace("$[elapsed_time]$", str(elapsed_time))
+    msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
+    msg = msg.replace("$[role_id]$", notify_role_id)
+    msg = msg.replace("$[channel_title]$", channel_title)
+    msg = msg.replace("$[video_url]$", video_url)
+    msg = msg.replace("$[video_title]$", video_title)
+    return msg
+  else:
+    print('Error: 無效的訊息類別')
+    return None
+
+
 @tasks.loop(minutes=1)
 async def track_new_stream():
   guild = await client.fetch_guild(guild_id)
@@ -52,8 +94,7 @@ async def stream_status(video_url):
   notify_channel = await client.fetch_channel(notify_channel_id)
   actual_start_time = stream_data['items'][0]['liveStreamingDetails'].get("actualStartTime")
   actual_end_time = stream_data['items'][0]['liveStreamingDetails'].get("actualEndTime")
-  live_broadcast_content = stream_data['items'][0]['snippet'].get("liveBroadcastContent")
-  concurrent_viewers = stream_data['items'][0]['liveStreamingDetails'].get("concurrentViewers")
+  scheduled_start_time = datetime.datetime.strptime(stream_data['items'][0]['liveStreamingDetails'].get("scheduledStartTime"), "%Y-%m-%dT%H:%M:%SZ")
   elapsed_time = None
   if actual_start_time != None:
     actual_start_time = datetime.datetime.strptime(actual_start_time, "%Y-%m-%dT%H:%M:%SZ")
@@ -61,15 +102,16 @@ async def stream_status(video_url):
     actual_end_time = datetime.datetime.strptime(actual_end_time, "%Y-%m-%dT%H:%M:%SZ")
   if actual_start_time != None and actual_end_time != None:
     elapsed_time = datetime.timedelta(seconds=round(actual_end_time.timestamp()) - round(actual_start_time.timestamp()))
-  scheduled_start_time = datetime.datetime.strptime(stream_data['items'][0]['liveStreamingDetails'].get("scheduledStartTime"), "%Y-%m-%dT%H:%M:%SZ")
+  live_broadcast_content = stream_data['items'][0]['snippet'].get("liveBroadcastContent")
+  concurrent_viewers = stream_data['items'][0]['liveStreamingDetails'].get("concurrentViewers")
   active_live_chat_id = stream_data['items'][0]['liveStreamingDetails'].get("activeLiveChatId")
   with open('catch.json', 'r', encoding='utf8') as f:
     catch_data = json.load(f)
   if refresh_index >= 15:
     await client.change_presence(status=discord.Status.dnd)
     await member.edit(nick = f"🕒 同步資料中")
-    track_new_stream.start()
     refresh_index = 0
+    track_new_stream.start()
     stream_status.cancel()
   else:
     if live_broadcast_content == "upcoming":
@@ -77,16 +119,9 @@ async def stream_status(video_url):
       await member.edit(nick = f"🟠 待機中")
       if catch_data["upcoming_catch"] != video_id:
         catch_data["upcoming_catch"] = video_id
-        if not ("$[actual_start_timestamp]$" or "$[actual_end_timestamp]$" or "$[elapsed_time]$") in upcoming_notify_message:
-          msg = upcoming_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
-          msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
-          msg = msg.replace("$[role_id]$", notify_role_id)
-          msg = msg.replace("$[channel_title]$", channel_title)
-          msg = msg.replace("$[video_url]$", video_url)
-          msg = msg.replace("$[video_title]$", video_title)
+        msg = process_notify_message("upcoming", video_url, video_title, scheduled_start_time, actual_start_time, actual_end_time, elapsed_time)
+        if msg != None:
           await notify_channel.send(content=msg)
-        else:
-          print('Error: 自訂通知包含無效參數，尚未開始的串流不包含所要求的參數')
         with open('catch.json', 'w') as f:
           json.dump(catch_data, f, indent=4)
     elif live_broadcast_content == "live" and actual_end_time == None:
@@ -94,17 +129,9 @@ async def stream_status(video_url):
       await member.edit(nick = f"🔴 直播中")
       if catch_data["live_catch"] != video_id:
         catch_data["live_catch"] = video_id
-        if not ("$[actual_end_timestamp]$" or "$[elapsed_time]$") in live_notify_message:
-          msg = live_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
-          msg = msg.replace("$[actual_start_timestamp]$", str(round(actual_start_time.timestamp()) + (utc_timezone * 3600)))
-          msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
-          msg = msg.replace("$[role_id]$", notify_role_id)
-          msg = msg.replace("$[channel_title]$", channel_title)
-          msg = msg.replace("$[video_url]$", video_url)
-          msg = msg.replace("$[video_title]$", video_title)
+        msg = process_notify_message("live", video_url, video_title, scheduled_start_time, actual_start_time, actual_end_time, elapsed_time)
+        if msg != None:
           await notify_channel.send(content=msg)
-        else:
-          print('Error: 自訂通知包含無效參數，進行中的串流不包含所要求的參數')
         with open('catch.json', 'w') as f:
           json.dump(catch_data, f, indent=4)
     elif live_broadcast_content == "live" and actual_end_time != None:
@@ -112,16 +139,9 @@ async def stream_status(video_url):
       await member.edit(nick = f"⚫ 無活動")
       if catch_data["end_catch"] != video_id:
         catch_data["end_catch"] = video_id
-        msg = end_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
-        msg = msg.replace("$[actual_start_timestamp]$", str(round(actual_start_time.timestamp()) + (utc_timezone * 3600)))
-        msg = msg.replace("$[actual_end_timestamp]$", str(round(actual_end_time.timestamp()) + (utc_timezone * 3600)))
-        msg = msg.replace("$[elapsed_time]$", str(elapsed_time))
-        msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
-        msg = msg.replace("$[role_id]$", notify_role_id)
-        msg = msg.replace("$[channel_title]$", channel_title)
-        msg = msg.replace("$[video_url]$", video_url)
-        msg = msg.replace("$[video_title]$", video_title)
-        await notify_channel.send(content=msg)
+        msg = process_notify_message("end", video_url, video_title, scheduled_start_time, actual_start_time, actual_end_time, elapsed_time)
+        if msg != None:
+          await notify_channel.send(content=msg)
         with open('catch.json', 'w') as f:
           json.dump(catch_data, f, indent=4)
       track_new_stream.start()
