@@ -118,9 +118,7 @@ async def stream_status(video_url):
     track_new_stream.start()
     stream_status.cancel()
   else:
-    if live_broadcast_content == "upcoming" and (scheduled_start_time - datetime.datetime.now()).days <= 14:
-      await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
-      await member.edit(nick = f"🟠 待機中")
+    if live_broadcast_content == "upcoming":
       if catch_data["end_catch"] != catch_data["live_catch"]:
         msg = process_notify_message("end", catch_data["live_catch"])
         if msg != None:
@@ -128,13 +126,19 @@ async def stream_status(video_url):
         catch_data["end_catch"] = catch_data["live_catch"]
         with open('catch.json', 'w') as f:
           json.dump(catch_data, f, indent=4)
-      if catch_data["upcoming_catch"] != video_id:
-        catch_data["upcoming_catch"] = video_id
-        msg = process_notify_message("upcoming", video_id)
-        if msg != None:
-          await notify_channel.send(content=msg)
-        with open('catch.json', 'w') as f:
-          json.dump(catch_data, f, indent=4)
+      if (scheduled_start_time - datetime.datetime.now()).days <= 14:
+        await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
+        await member.edit(nick = f"🟠 待機中")
+        if catch_data["upcoming_catch"] != video_id:
+          catch_data["upcoming_catch"] = video_id
+          msg = process_notify_message("upcoming", video_id)
+          if msg != None:
+            await notify_channel.send(content=msg)
+          with open('catch.json', 'w') as f:
+            json.dump(catch_data, f, indent=4)
+      else:
+        await client.change_presence(status=discord.Status.online)
+        await member.edit(nick = f"⚫ 無活動")
     elif live_broadcast_content == "live" and actual_end_time == None:
       await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
       await member.edit(nick = f"🔴 直播中")
@@ -145,7 +149,7 @@ async def stream_status(video_url):
           await notify_channel.send(content=msg)
         with open('catch.json', 'w') as f:
           json.dump(catch_data, f, indent=4)
-    else:
+    elif live_broadcast_content == "live" and actual_end_time != None:
       await client.change_presence(status=discord.Status.online)
       await member.edit(nick = f"⚫ 無活動")
       if catch_data["end_catch"] != video_id:
