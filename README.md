@@ -3,6 +3,9 @@
 有任何Bug請善用GitHub issue，或聯絡NightFeather#0144  
 使用時請標明出處，或使用fork功能  
 
+Clone repo: `git clone https://git@github.com/NightFeather0615/YouTube-Stream-Status-publish`
+Sync repo: `git pull origin main`
+
 ---
 
 使用教學:  
