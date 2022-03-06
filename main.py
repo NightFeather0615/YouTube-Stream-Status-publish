@@ -10,7 +10,7 @@ from dotenv import *
 from Naked.toolshed.shell import muterun_js
 
 
-client = commands.Bot(command_prefix='>>',
+client = commands.AutoShardedBot(command_prefix='>>',
                       intents=discord.Intents.all())
 
 logging.basicConfig(level=logging.INFO,
