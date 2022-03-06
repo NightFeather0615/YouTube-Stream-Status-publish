@@ -41,14 +41,14 @@ async def on_ready():
   logging.info(f"Logged in as {client.user}")
   logging.info(f"Google API token: {google_api_key}")
   logging.info(f"Start track channel, ID: {channel_id}")
+  sync_channel_avatar.start()
   track_new_stream.start()
-  sync_channel_data.start()
 
 @client.event
 async def on_resumed():
   logging.info(f"Connection resumed")
+  sync_channel_avatar.start()
   track_new_stream.start()
-  sync_channel_data.start()
 
 @client.event
 async def on_connect():
@@ -57,8 +57,8 @@ async def on_connect():
 @client.event
 async def on_disconnect():
   logging.warning("Disconnected to Discord")
+  sync_channel_avatar.cancel()
   track_new_stream.cancel()
-  sync_channel_data.cancel()
 
 async def process_notify_message(notify_type, video_id):
   async with aiohttp.ClientSession() as session:
@@ -128,14 +128,15 @@ async def track_new_stream():
       video_id = response_data.split("/watch?v=")[1]
       if last_stream_id != video_id:
         last_stream_id = video_id
-        logging.info(f"Detected new stream, ID: {video_id}")
-      stream_status.start(response_data)
+        logging.info(f"Detected new stream")
+        logging.info(f"Start track stream status, ID: {video_id}")
+      track_stream_status.start(response_data)
       track_new_stream.cancel()
   else:
     logging.error(f"Unable to get stream info")
 
 @tasks.loop(minutes=1)
-async def stream_status(response_data):
+async def track_stream_status(response_data):
   global channel_title
   global refresh_index
   refresh_index += 1
@@ -153,10 +154,9 @@ async def stream_status(response_data):
       with open('catch.json', 'r', encoding='utf8') as f:
         catch_data = json.load(f)
       if refresh_index >= 5:
-        logging.info(f"Sync channel stream status")
         refresh_index = 0
         track_new_stream.start()
-        stream_status.cancel()
+        track_stream_status.cancel()
       else:
         if live_broadcast_content == "upcoming":
           if catch_data["end_catch"] != catch_data["live_catch"]:
@@ -193,6 +193,7 @@ async def stream_status(response_data):
           await member.edit(nick = f"⚫ 無活動")
           if catch_data["end_catch"] != video_id:
             logging.info(f"Channel stream status updated: None")
+            logging.info(f"Start track new stream")
             catch_data["end_catch"] = video_id
             msg = await process_notify_message("end", video_id)
             if msg != None:
@@ -200,10 +201,10 @@ async def stream_status(response_data):
             with open('catch.json', 'w') as f:
               json.dump(catch_data, f, indent=4)
           track_new_stream.start()
-          stream_status.cancel()
+          track_stream_status.cancel()
 
 @tasks.loop(hours=24)
-async def sync_channel_data():
+async def sync_channel_avatar():
   global channel_title
   logging.info(f"Sync channel avatar")
   async with aiohttp.ClientSession() as session:
