@@ -180,8 +180,8 @@ async def track_stream_status(response_data):
         elif live_broadcast_content == "live" and actual_end_time == None:
           await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
           await member.edit(nick = f"🔴 直播中")
-          logging.info(f"Channel stream status updated: Streaming")
           if catch_data["live_catch"] != video_id:
+            logging.info(f"Channel stream status updated: Streaming")
             catch_data["live_catch"] = video_id
             msg = await process_notify_message("live", video_id)
             if msg != None:
