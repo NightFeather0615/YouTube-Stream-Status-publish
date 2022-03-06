@@ -1,13 +1,22 @@
 import os
 import json
-import requests
 import datetime
 import discord
+import aiohttp
+import sys
+import logging
 from discord.ext import commands, tasks
 from dotenv import *
 from Naked.toolshed.shell import muterun_js
 
-client = commands.Bot(command_prefix='>>', intents=discord.Intents.all())
+
+client = commands.Bot(command_prefix='>>',
+                      intents=discord.Intents.all())
+
+logging.basicConfig(level=logging.INFO,
+                    format='[%(asctime)s] [%(levelname)s] %(message)s',
+                    datefmt='%Y/%m/%d %I:%M:%S')
+
 client.remove_command("help")
 load_dotenv()
 google_api_key = os.getenv("GOOGLE_API_KEY")
@@ -22,163 +31,192 @@ notify_channel_id = os.getenv("NOTIFY_CHANNEL_ID")
 notify_role_id = os.getenv("NOTIFY_ROLE_ID")
 refresh_index = 0
 
-def process_notify_message(notify_type, video_id):
-  stream_data = requests.get(f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&part=snippet,liveStreamingDetails&key={google_api_key}")
-  stream_data = stream_data.json()
-  video_title = stream_data['items'][0]['snippet'].get('title')
-  video_url = f"https://www.youtube.com/watch?v={video_id}"
-  actual_start_time = stream_data['items'][0]['liveStreamingDetails'].get("actualStartTime")
-  actual_end_time = stream_data['items'][0]['liveStreamingDetails'].get("actualEndTime")
-  scheduled_start_time = datetime.datetime.strptime(stream_data['items'][0]['liveStreamingDetails'].get("scheduledStartTime"), "%Y-%m-%dT%H:%M:%SZ")
-  elapsed_time = None
-  if actual_start_time != None:
-    actual_start_time = datetime.datetime.strptime(actual_start_time, "%Y-%m-%dT%H:%M:%SZ")
-  if actual_end_time != None:
-    actual_end_time = datetime.datetime.strptime(actual_end_time, "%Y-%m-%dT%H:%M:%SZ")
-  if actual_start_time != None and actual_end_time != None:
-    elapsed_time = datetime.timedelta(seconds=round(actual_end_time.timestamp()) - round(actual_start_time.timestamp()))
-  if notify_type == "upcoming":
-    if not ("$[actual_start_timestamp]$" or "$[actual_end_timestamp]$" or "$[elapsed_time]$") in upcoming_notify_message:
-      msg = upcoming_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
-      msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
-      msg = msg.replace("$[role_id]$", notify_role_id)
-      msg = msg.replace("$[channel_title]$", channel_title)
-      msg = msg.replace("$[video_url]$", video_url)
-      msg = msg.replace("$[video_title]$", video_title)
-      return msg
-    else:
-      print('Error: 自訂通知包含無效參數，尚未開始的串流不包含所要求的參數')
-      return None
-  elif notify_type == "live":
-    if not ("$[actual_end_timestamp]$" or "$[elapsed_time]$") in live_notify_message:
-      msg = live_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
-      msg = msg.replace("$[actual_start_timestamp]$", str(round(actual_start_time.timestamp()) + (utc_timezone * 3600)))
-      msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
-      msg = msg.replace("$[role_id]$", notify_role_id)
-      msg = msg.replace("$[channel_title]$", channel_title)
-      msg = msg.replace("$[video_url]$", video_url)
-      msg = msg.replace("$[video_title]$", video_title)
-      return msg
-    else:
-      print('Error: 自訂通知包含無效參數，進行中的串流不包含所要求的參數')
-      return None
-  elif notify_type == "end":
-    msg = end_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
-    msg = msg.replace("$[actual_start_timestamp]$", str(round(actual_start_time.timestamp()) + (utc_timezone * 3600)))
-    msg = msg.replace("$[actual_end_timestamp]$", str(round(actual_end_time.timestamp()) + (utc_timezone * 3600)))
-    msg = msg.replace("$[elapsed_time]$", str(elapsed_time))
-    msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
-    msg = msg.replace("$[role_id]$", notify_role_id)
-    msg = msg.replace("$[channel_title]$", channel_title)
-    msg = msg.replace("$[video_url]$", video_url)
-    msg = msg.replace("$[video_title]$", video_title)
-    return msg
-  else:
-    print('Error: 無效的訊息類別')
-    return None
+@client.event
+async def on_error(event):
+  error = sys.exc_info()
+  logging.error(f"Event {event} raised {error[0].__name__}: {error[1]}")
 
+@client.event
+async def on_ready():
+  logging.info(f"Logged in as {client.user}")
+  logging.info(f"Google API token: {google_api_key}")
+  logging.info(f"Start track channel, ID: {channel_id}")
+  track_new_stream.start()
+  sync_channel_data.start()
+
+@client.event
+async def on_resumed():
+  logging.info(f"Connection resumed")
+  track_new_stream.start()
+  sync_channel_data.start()
+
+@client.event
+async def on_connect():
+  logging.info("Connected to Discord")
+
+@client.event
+async def on_disconnect():
+  logging.warning("Disconnected to Discord")
+  track_new_stream.cancel()
+  sync_channel_data.cancel()
+
+async def process_notify_message(notify_type, video_id):
+  async with aiohttp.ClientSession() as session:
+    async with session.get(f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&part=snippet,liveStreamingDetails&key={google_api_key}") as stream_raw_data:
+      stream_data = await stream_raw_data.json()
+      video_title = stream_data['items'][0]['snippet'].get('title')
+      video_url = f"https://www.youtube.com/watch?v={video_id}"
+      actual_start_time = stream_data['items'][0]['liveStreamingDetails'].get("actualStartTime")
+      actual_end_time = stream_data['items'][0]['liveStreamingDetails'].get("actualEndTime")
+      scheduled_start_time = datetime.datetime.strptime(stream_data['items'][0]['liveStreamingDetails'].get("scheduledStartTime"), "%Y-%m-%dT%H:%M:%SZ")
+      elapsed_time = None
+      if actual_start_time != None:
+        actual_start_time = datetime.datetime.strptime(actual_start_time, "%Y-%m-%dT%H:%M:%SZ")
+      if actual_end_time != None:
+        actual_end_time = datetime.datetime.strptime(actual_end_time, "%Y-%m-%dT%H:%M:%SZ")
+      if actual_start_time != None and actual_end_time != None:
+        elapsed_time = datetime.timedelta(seconds=round(actual_end_time.timestamp()) - round(actual_start_time.timestamp()))
+      if notify_type == "upcoming":
+        if not ("$[actual_start_timestamp]$" or "$[actual_end_timestamp]$" or "$[elapsed_time]$") in upcoming_notify_message:
+          msg = upcoming_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
+          msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
+          msg = msg.replace("$[role_id]$", notify_role_id)
+          msg = msg.replace("$[channel_title]$", channel_title)
+          msg = msg.replace("$[video_url]$", video_url)
+          msg = msg.replace("$[video_title]$", video_title)
+          return msg
+        else:
+          logging.error("自訂通知包含無效參數，尚未開始的串流不包含所要求的參數")
+          return None
+      elif notify_type == "live":
+        if not ("$[actual_end_timestamp]$" or "$[elapsed_time]$") in live_notify_message:
+          msg = live_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
+          msg = msg.replace("$[actual_start_timestamp]$", str(round(actual_start_time.timestamp()) + (utc_timezone * 3600)))
+          msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
+          msg = msg.replace("$[role_id]$", notify_role_id)
+          msg = msg.replace("$[channel_title]$", channel_title)
+          msg = msg.replace("$[video_url]$", video_url)
+          msg = msg.replace("$[video_title]$", video_title)
+          return msg
+        else:
+          logging.error("自訂通知包含無效參數，進行中的串流不包含所要求的參數")
+          return None
+      elif notify_type == "end":
+        msg = end_notify_message.replace("$[scheduled_start_timestamp]$", str(round(scheduled_start_time.timestamp()) + (utc_timezone * 3600)))
+        msg = msg.replace("$[actual_start_timestamp]$", str(round(actual_start_time.timestamp()) + (utc_timezone * 3600)))
+        msg = msg.replace("$[actual_end_timestamp]$", str(round(actual_end_time.timestamp()) + (utc_timezone * 3600)))
+        msg = msg.replace("$[elapsed_time]$", str(elapsed_time))
+        msg = msg.replace("$[role_tag]$", f"<@&{notify_role_id}>")
+        msg = msg.replace("$[role_id]$", notify_role_id)
+        msg = msg.replace("$[channel_title]$", channel_title)
+        msg = msg.replace("$[video_url]$", video_url)
+        msg = msg.replace("$[video_title]$", video_title)
+        return msg
+      else:
+        logging.error("無效的訊息類別")
+        return None
+
+last_stream_id = None
 
 @tasks.loop(minutes=1)
 async def track_new_stream():
-  guild = await client.fetch_guild(guild_id)
-  member = await guild.fetch_member(client.user.id)
+  global last_stream_id
   response = muterun_js('js_script/index.js', channel_id)
   if response.exitcode == 0:
-    return_data = response.stdout.decode("utf-8").replace('\n', "")
-    if return_data != "false":
-      stream_status.start(return_data)
+    response_data = response.stdout.decode("utf-8").replace('\n', "")
+    if response_data != "false":
+      video_id = response_data.split("/watch?v=")[1]
+      if last_stream_id != video_id:
+        last_stream_id = video_id
+        logging.info(f"Detected new stream, ID: {video_id}")
+      stream_status.start(response_data)
       track_new_stream.cancel()
-    else:
-      await client.change_presence(status=discord.Status.online)
-      await member.edit(nick = f"⚫ 無活動")
   else:
-    print("Error: 確認串流狀態時發生了未知的錯誤，請確認是否有安裝Node.js及其所需模組")
+    logging.error(f"Unable to get stream info")
 
 @tasks.loop(minutes=1)
-async def stream_status(video_url):
+async def stream_status(response_data):
   global channel_title
   global refresh_index
   refresh_index += 1
   guild = await client.fetch_guild(guild_id)
   member = await guild.fetch_member(client.user.id)
   notify_channel = await client.fetch_channel(notify_channel_id)
-  video_id = video_url.split("/watch?v=")[1]
-  stream_data = requests.get(f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&part=snippet,liveStreamingDetails&key={google_api_key}")
-  stream_data = stream_data.json()
-  live_broadcast_content = stream_data['items'][0]['snippet'].get("liveBroadcastContent")
-  video_title = stream_data['items'][0]['snippet'].get('title')
-  actual_end_time = stream_data['items'][0]['liveStreamingDetails'].get("actualEndTime")
-  scheduled_start_time = datetime.datetime.strptime(stream_data['items'][0]['liveStreamingDetails'].get("scheduledStartTime"), "%Y-%m-%dT%H:%M:%SZ")
-  with open('catch.json', 'r', encoding='utf8') as f:
-    catch_data = json.load(f)
-  if refresh_index >= 5:
-    await client.change_presence(status=discord.Status.dnd)
-    await member.edit(nick = f"🕒 同步資料中")
-    refresh_index = 0
-    track_new_stream.start()
-    stream_status.cancel()
-  else:
-    if live_broadcast_content == "upcoming":
-      if catch_data["end_catch"] != catch_data["live_catch"]:
-        msg = process_notify_message("end", catch_data["live_catch"])
-        if msg != None:
-          await notify_channel.send(content=msg)
-        catch_data["end_catch"] = catch_data["live_catch"]
-        with open('catch.json', 'w') as f:
-          json.dump(catch_data, f, indent=4)
-      if (scheduled_start_time - datetime.datetime.now()).days <= 14:
-        await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
-        await member.edit(nick = f"🟠 待機中")
-        if catch_data["upcoming_catch"] != video_id:
-          catch_data["upcoming_catch"] = video_id
-          msg = process_notify_message("upcoming", video_id)
-          if msg != None:
-            await notify_channel.send(content=msg)
-          with open('catch.json', 'w') as f:
-            json.dump(catch_data, f, indent=4)
+  video_id = response_data.split("/watch?v=")[1]
+  async with aiohttp.ClientSession() as session:
+    async with session.get(f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&part=snippet,liveStreamingDetails&key={google_api_key}") as stream_raw_data:
+      stream_data = await stream_raw_data.json()
+      live_broadcast_content = stream_data['items'][0]['snippet'].get("liveBroadcastContent")
+      video_title = stream_data['items'][0]['snippet'].get('title')
+      actual_end_time = stream_data['items'][0]['liveStreamingDetails'].get("actualEndTime")
+      scheduled_start_time = datetime.datetime.strptime(stream_data['items'][0]['liveStreamingDetails'].get("scheduledStartTime"), "%Y-%m-%dT%H:%M:%SZ")
+      with open('catch.json', 'r', encoding='utf8') as f:
+        catch_data = json.load(f)
+      if refresh_index >= 5:
+        logging.info(f"Sync channel stream status")
+        refresh_index = 0
+        track_new_stream.start()
+        stream_status.cancel()
       else:
-        await client.change_presence(status=discord.Status.online)
-        await member.edit(nick = f"⚫ 無活動")
-    elif live_broadcast_content == "live" and actual_end_time == None:
-      await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
-      await member.edit(nick = f"🔴 直播中")
-      if catch_data["live_catch"] != video_id:
-        catch_data["live_catch"] = video_id
-        msg = process_notify_message("live", video_id)
-        if msg != None:
-          await notify_channel.send(content=msg)
-        with open('catch.json', 'w') as f:
-          json.dump(catch_data, f, indent=4)
-    elif live_broadcast_content == "live" and actual_end_time != None:
-      await client.change_presence(status=discord.Status.online)
-      await member.edit(nick = f"⚫ 無活動")
-      if catch_data["end_catch"] != video_id:
-        catch_data["end_catch"] = video_id
-        msg = process_notify_message("end", video_id)
-        if msg != None:
-          await notify_channel.send(content=msg)
-        with open('catch.json', 'w') as f:
-          json.dump(catch_data, f, indent=4)
-      track_new_stream.start()
-      stream_status.cancel()
+        if live_broadcast_content == "upcoming":
+          if catch_data["end_catch"] != catch_data["live_catch"]:
+            msg = await process_notify_message("end", catch_data["live_catch"])
+            if msg != None:
+              await notify_channel.send(content=msg)
+            catch_data["end_catch"] = catch_data["live_catch"]
+            with open('catch.json', 'w') as f:
+              json.dump(catch_data, f, indent=4)
+          if (scheduled_start_time - datetime.datetime.now()).days <= 14:
+            await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
+            await member.edit(nick = f"🟠 待機中")
+            if catch_data["upcoming_catch"] != video_id:
+              logging.info(f"Channel stream status updated: Upcoming")
+              catch_data["upcoming_catch"] = video_id
+              msg = await process_notify_message("upcoming", video_id)
+              if msg != None:
+                await notify_channel.send(content=msg)
+              with open('catch.json', 'w') as f:
+                json.dump(catch_data, f, indent=4)
+        elif live_broadcast_content == "live" and actual_end_time == None:
+          await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
+          await member.edit(nick = f"🔴 直播中")
+          logging.info(f"Channel stream status updated: Streaming")
+          if catch_data["live_catch"] != video_id:
+            catch_data["live_catch"] = video_id
+            msg = await process_notify_message("live", video_id)
+            if msg != None:
+              await notify_channel.send(content=msg)
+            with open('catch.json', 'w') as f:
+              json.dump(catch_data, f, indent=4)
+        elif live_broadcast_content == "live" and actual_end_time != None:
+          await client.change_presence(status=discord.Status.online)
+          await member.edit(nick = f"⚫ 無活動")
+          if catch_data["end_catch"] != video_id:
+            logging.info(f"Channel stream status updated: None")
+            catch_data["end_catch"] = video_id
+            msg = await process_notify_message("end", video_id)
+            if msg != None:
+              await notify_channel.send(content=msg)
+            with open('catch.json', 'w') as f:
+              json.dump(catch_data, f, indent=4)
+          track_new_stream.start()
+          stream_status.cancel()
 
 @tasks.loop(hours=24)
 async def sync_channel_data():
   global channel_title
-  channel_data = requests.get(f"https://www.googleapis.com/youtube/v3/channels?part=snippet&id={channel_id}&key={google_api_key}")
-  channel_data = channel_data.json()
-  pfp_url = channel_data['items'][0]['snippet']['thumbnails']['high']['url']
-  channel_title = channel_data['items'][0]['snippet'].get("title")
-  img_data = requests.get(pfp_url).content
-  with open('channel_avatar.jpg', 'wb') as handler:
-    handler.write(img_data)
-  with open('channel_avatar.jpg', 'rb') as f:
-    await client.user.edit(avatar=f.read())
-
-@client.event
-async def on_ready():
-  print('<Logged in as {0.user}>'.format(client))
-  track_new_stream.start()
-  sync_channel_data.start()
+  logging.info(f"Sync channel avatar")
+  async with aiohttp.ClientSession() as session:
+    async with session.get(f"https://www.googleapis.com/youtube/v3/channels?part=snippet&id={channel_id}&key={google_api_key}") as channel_raw_data:
+      channel_data = await channel_raw_data.json()
+      pfp_url = channel_data['items'][0]['snippet']['thumbnails']['high']['url']
+      channel_title = channel_data['items'][0]['snippet'].get("title")
+      async with aiohttp.ClientSession() as session:
+        async with session.get(pfp_url) as img_raw_data:
+          img = await img_raw_data.content.read()
+      with open('channel_avatar.jpg', 'wb') as handler:
+        handler.write(img)
+      with open('channel_avatar.jpg', 'rb') as f:
+        await client.user.edit(avatar=f.read())
 
 client.run(os.getenv("TOKEN"))
