@@ -149,7 +149,6 @@ async def track_stream_status(response_data):
       stream_data = await stream_raw_data.json()
       live_broadcast_content = stream_data['items'][0]['snippet'].get("liveBroadcastContent")
       video_title = stream_data['items'][0]['snippet'].get('title')
-      actual_end_time = stream_data['items'][0]['liveStreamingDetails'].get("actualEndTime")
       scheduled_start_time = datetime.datetime.strptime(stream_data['items'][0]['liveStreamingDetails'].get("scheduledStartTime"), "%Y-%m-%dT%H:%M:%SZ")
       with open('catch.json', 'r', encoding='utf8') as f:
         catch_data = json.load(f)
@@ -158,53 +157,48 @@ async def track_stream_status(response_data):
         track_new_stream.start()
         track_stream_status.cancel()
       else:
-        if live_broadcast_content == "upcoming":
-          if catch_data["end_catch"] != catch_data["live_catch"]:
-            msg = await process_notify_message("end", catch_data["live_catch"])
+        if live_broadcast_content == "upcoming" and not ((scheduled_start_time - datetime.datetime.now()).days <= 14):
+          await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
+          await member.edit(nick = f"🟠 待機中")
+          if catch_data["upcoming_catch"] != video_id:
+            logging.info(f"Channel stream status updated: Upcoming")
+
+            msg = await process_notify_message("upcoming", video_id)
             if msg != None:
               await notify_channel.send(content=msg)
-            catch_data["end_catch"] = catch_data["live_catch"]
+
             with open('catch.json', 'w') as f:
-              json.dump(catch_data, f, indent=4)
-          if (scheduled_start_time - datetime.datetime.now()).days <= 14:
-            await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
-            await member.edit(nick = f"🟠 待機中")
-            if catch_data["upcoming_catch"] != video_id:
-              logging.info(f"Channel stream status updated: Upcoming")
               catch_data["upcoming_catch"] = video_id
-              msg = await process_notify_message("upcoming", video_id)
-              if msg != None:
-                await notify_channel.send(content=msg)
-              with open('catch.json', 'w') as f:
-                json.dump(catch_data, f, indent=4)
-          else:
-            await client.change_presence(status=discord.Status.online)
-            await member.edit(nick = f"⚫ 無活動")
-            track_new_stream.start()
-            track_stream_status.cancel()
-        elif live_broadcast_content == "live" and actual_end_time == None:
+              json.dump(catch_data, f, indent=4)
+
+        elif live_broadcast_content == "live":
           await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
           await member.edit(nick = f"🔴 直播中")
           if catch_data["live_catch"] != video_id:
             logging.info(f"Channel stream status updated: Streaming")
-            catch_data["live_catch"] = video_id
+            
             msg = await process_notify_message("live", video_id)
             if msg != None:
               await notify_channel.send(content=msg)
             with open('catch.json', 'w') as f:
+              catch_data["live_catch"] = video_id
               json.dump(catch_data, f, indent=4)
-        else:
+
+        elif live_broadcast_content == "none" or (live_broadcast_content == "upcoming" and (scheduled_start_time - datetime.datetime.now()).days <= 14):
           await client.change_presence(status=discord.Status.online)
           await member.edit(nick = f"⚫ 無活動")
           if catch_data["end_catch"] != video_id:
             logging.info(f"Channel stream status updated: None")
             logging.info(f"Start track new stream")
-            catch_data["end_catch"] = video_id
+            
             msg = await process_notify_message("end", video_id)
             if msg != None:
               await notify_channel.send(content=msg)
+
             with open('catch.json', 'w') as f:
+              catch_data["end_catch"] = video_id
               json.dump(catch_data, f, indent=4)
+
           track_new_stream.start()
           track_stream_status.cancel()
 
