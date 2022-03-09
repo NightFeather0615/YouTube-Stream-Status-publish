@@ -178,9 +178,10 @@ async def track_stream_status(response_data):
               with open('catch.json', 'w') as f:
                 json.dump(catch_data, f, indent=4)
           else:
-            logging.info(f"Upcoming stream is too far away, skip")
             await client.change_presence(status=discord.Status.online)
             await member.edit(nick = f"⚫ 無活動")
+            track_new_stream.start()
+            track_stream_status.cancel()
         elif live_broadcast_content == "live" and actual_end_time == None:
           await client.change_presence(status=discord.Status.online, activity=discord.Streaming(name=video_title, url=f"https://www.youtube.com/watch?v={video_id}"))
           await member.edit(nick = f"🔴 直播中")
